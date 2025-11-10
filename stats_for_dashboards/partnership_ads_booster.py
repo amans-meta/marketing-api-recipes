@@ -1,3 +1,748 @@
 """
-TODO: This solution creates a boosting engine to automate the creation of partnership ads.
+Partnership Ads Booster
+
+This solution creates a boosting engine to automate the creation of partnership ads.
+
+This script provides two main functionalities:
+1. Fetch all advertisable medias with eligibility and permission for partnership ads
+2. Create partnership ads from a CSV input file
+
+Instructions to run:
+$python3 -m venv venv
+$source venv/bin/activate
+$pip install requests
+$python3 partnership_ads_booster.py --mode fetch --access-token YOUR_TOKEN --ig-account-id YOUR_IG_ID --creator-username CREATOR_USERNAME
+$python3 partnership_ads_booster.py --mode create --access-token YOUR_TOKEN --input-csv input.csv --ig-account-id YOUR_IG_ID --ad-account-id YOUR_AD_ID --facebook-page-id YOUR_PAGE_ID
 """
+
+import argparse
+import csv
+import json
+import re
+import sys
+from typing import Dict, List, Optional, Tuple
+
+import requests
+
+
+def extract_instagram_shortcode(permalink: str) -> str:
+    """
+    Extract Instagram shortcode from permalink.
+
+    Handles two formats:
+    1. Full URL: https://www.instagram.com/reel/aBc123XyZ/ -> aBc123XyZ
+    2. Shortcode only: aBc123XyZ -> aBc123XyZ
+
+    Args:
+        permalink: Instagram permalink (URL or shortcode)
+
+    Returns:
+        Instagram shortcode
+
+    Raises:
+        ValueError: If the permalink is a stories URL (not supported)
+    """
+    if not permalink:
+        return permalink
+
+    # Check if it's a stories URL
+    if "/stories/" in permalink:
+        raise ValueError("Stories boosting is not supported by this script")
+
+    # Check if it's a URL
+    url_pattern = (
+        r"(?:https?://)?(?:www\.)?instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)"
+    )
+    match = re.search(url_pattern, permalink)
+
+    if match:
+        return match.group(1)
+
+    # If not a URL, assume it's already a shortcode
+    return permalink.strip("/")
+
+
+def fetch_all_advertisable_medias(
+    access_token: str,
+    ig_account_id: str,
+    creator_username: Optional[str] = None,
+    output_csv: str = "advertisable_medias.csv",
+) -> None:
+    """
+    Fetch all advertisable medias for the given Instagram account and save to CSV.
+
+    Args:
+        access_token: Facebook/Instagram access token
+        ig_account_id: Instagram account ID
+        creator_username: Instagram creator username (optional but recommended to avoid fetching too much data)
+        output_csv: Output CSV file path
+    """
+    creator_info = f" (creator: {creator_username})" if creator_username else ""
+    print(
+        f"Fetching advertisable medias for IG account {ig_account_id}{creator_info}..."
+    )
+
+    url = f"https://graph.facebook.com/v22.0/{ig_account_id}/branded_content_advertisable_medias"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    params = {
+        "fields": "eligibility_errors,owner_id,permalink,id,has_permission_for_partnership_ad",
+        "limit": 25,
+    }
+
+    if creator_username:
+        params["creator_username"] = creator_username
+
+    all_medias = []
+
+    try:
+        while True:
+            response = requests.get(url, headers=headers, params=params)
+
+            if response.status_code != 200:
+                print(f"Error: {response.status_code} - {response.text}")
+                sys.exit(1)
+
+            response_data = response.json()
+
+            if "data" in response_data:
+                medias = response_data["data"]
+                all_medias.extend(medias)
+                print(f"Fetched {len(medias)} medias (Total: {len(all_medias)})")
+
+            if "paging" in response_data and "next" in response_data["paging"]:
+                url = response_data["paging"]["next"]
+                params = {}
+            else:
+                break
+
+        if not all_medias:
+            print("No advertisable medias found")
+            return
+
+        csv_rows = []
+        for media in all_medias:
+            row = {
+                "media_id": media.get("id", ""),
+                "permalink": media.get("permalink", ""),
+                "owner_id": media.get("owner_id", ""),
+                "has_permission_for_partnership_ad": media.get(
+                    "has_permission_for_partnership_ad", False
+                ),
+                "eligibility_errors": json.dumps(media.get("eligibility_errors", [])),
+            }
+            csv_rows.append(row)
+
+        fieldnames = [
+            "media_id",
+            "permalink",
+            "owner_id",
+            "has_permission_for_partnership_ad",
+            "eligibility_errors",
+        ]
+        with open(output_csv, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_rows)
+
+        print(
+            f"\nSuccessfully saved {len(csv_rows)} advertisable medias to {output_csv}"
+        )
+
+    except requests.exceptions.RequestException as e:
+        print(f"Request error occurred: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        sys.exit(1)
+
+
+def fetch_branded_content_advertisable_medias(
+    access_token: str,
+    ig_account_id: str,
+    ad_code: Optional[str] = None,
+    permalinks: Optional[List[str]] = None,
+) -> Optional[Dict]:
+    """
+    Fetch eligibility information for a specific media.
+
+    Args:
+        access_token: Facebook/Instagram access token
+        ig_account_id: Instagram account ID
+        ad_code: Ad code for the media
+        permalinks: List of permalinks
+
+    Returns:
+        Dict containing eligibility information or None
+    """
+    url = f"https://graph.facebook.com/v22.0/{ig_account_id}/branded_content_advertisable_medias"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    params = {
+        "fields": "eligibility_errors,owner_id,permalink,id,has_permission_for_partnership_ad",
+    }
+
+    if ad_code:
+        params["ad_code"] = ad_code
+    elif permalinks:
+        params["permalinks"] = json.dumps(permalinks)
+    else:
+        raise ValueError("ad_code or permalinks must be passed")
+
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        response_data = response.json()
+        if "data" in response_data and len(response_data["data"]) > 0:
+            print(f"Eligibility: {response_data['data'][0]}")
+            return response_data["data"][0]
+    else:
+        print(f"Error: {response.status_code} - {response.text}")
+        return {"error": response.text}
+
+    return None
+
+
+def upload_instagram_video(
+    access_token: str,
+    ad_account_id: str,
+    source_instagram_media_id: str,
+    ad_code: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Upload Instagram video to ad account.
+
+    Args:
+        access_token: Facebook/Instagram access token
+        ad_account_id: Ad account ID
+        source_instagram_media_id: Source Instagram media ID
+        ad_code: Ad code for partnership ad
+
+    Returns:
+        Tuple of (Video ID or None, Error message or None)
+    """
+    url = f"https://graph.facebook.com/v22.0/act_{ad_account_id}/advideos"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    params = {
+        "source_instagram_media_id": source_instagram_media_id,
+    }
+
+    if ad_code:
+        params["partnership_ad_ad_code"] = ad_code
+        params["is_partnership_ad"] = True
+
+    response = requests.post(url, headers=headers, params=params)
+    if response.status_code == 200:
+        response_data = response.json()
+        if "id" in response_data:
+            print(f"Video uploaded successfully with ID: {response_data['id']}")
+            return response_data["id"], None
+        else:
+            error = "Video upload: 'id' not found in response data"
+            print(f"Error: {error}")
+            return None, error
+    else:
+        error = f"Video upload failed: {response.status_code} - {response.text}"
+        print(f"Error: {error}")
+        return None, error
+
+
+def create_ad_creative(
+    access_token: str,
+    ad_account_id: str,
+    facebook_page_id: str,
+    ig_account_id: str,
+    source_instagram_media_id: str,
+    ad_code: Optional[str],
+    cta_type: str,
+    link: str,
+    app_link: Optional[str] = None,
+    product_set_id: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Create ad creative.
+
+    Args:
+        access_token: Facebook/Instagram access token
+        ad_account_id: Ad account ID
+        facebook_page_id: Facebook page ID
+        ig_account_id: Instagram account ID
+        source_instagram_media_id: Source Instagram media ID
+        ad_code: Ad code for partnership ad
+        cta_type: Call to action type
+        link: CTA link (mandatory)
+        app_link: CTA app link (optional)
+        product_set_id: Product set ID (optional)
+
+    Returns:
+        Tuple of (Creative ID or None, Error message or None)
+    """
+    url = f"https://graph.facebook.com/v23.0/act_{ad_account_id}/adcreatives"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    params = {
+        "object_id": facebook_page_id,
+        "facebook_branded_content": json.dumps({"sponsor_page_id": facebook_page_id}),
+        "instagram_branded_content": json.dumps({"sponsor_id": ig_account_id}),
+    }
+
+    # Build CTA value object based on available parameters
+    cta_value = {"link": link}
+    if app_link:
+        cta_value["app_link"] = app_link
+
+    params["call_to_action"] = json.dumps(
+        {
+            "type": cta_type,
+            "value": cta_value,
+        }
+    )
+
+    if ad_code:
+        params["branded_content"] = json.dumps(
+            {"instagram_boost_post_access_token": ad_code}
+        )
+    elif source_instagram_media_id:
+        params["source_instagram_media_id"] = source_instagram_media_id
+    else:
+        raise ValueError("ad_code or source_instagram_media_id must be passed")
+
+    if product_set_id:
+        params["degrees_of_freedom_spec"] = json.dumps(
+            {
+                "creative_features_spec": {
+                    "product_extensions": {"enroll_status": "OPT_IN"}
+                }
+            }
+        )
+        params["creative_sourcing_spec"] = json.dumps(
+            {"associated_product_set_id": f"{product_set_id}"}
+        )
+
+    try:
+        response = requests.post(url, headers=headers, params=params)
+        response_data = response.json()
+        if response.status_code == 200:
+            if "id" in response_data:
+                print(f"creative_id: {response_data['id']}")
+                return response_data["id"], None
+            else:
+                error = "Creative creation: 'id' not found in response data"
+                print(f"Error: {error}")
+                return None, error
+        else:
+            error = (
+                f"Creative creation failed: {response.status_code} - {response.text}"
+            )
+            print(f"Error: {error}")
+            return None, error
+    except requests.exceptions.RequestException as e:
+        error = f"Creative creation request error: {e}"
+        print(error)
+        return None, error
+    except Exception as e:
+        error = f"Creative creation unknown error: {e}"
+        print(error)
+        return None, error
+
+
+def create_ad(
+    access_token: str,
+    ad_account_id: str,
+    ad_name: str,
+    ad_set_id: str,
+    creative_id: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Create ad.
+
+    Args:
+        access_token: Facebook/Instagram access token
+        ad_account_id: Ad account ID
+        ad_name: Ad name
+        ad_set_id: Ad set ID
+        creative_id: Creative ID
+
+    Returns:
+        Tuple of (Ad ID or None, Error message or None)
+    """
+    url = f"https://graph.facebook.com/v22.0/act_{ad_account_id}/ads"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    params = {
+        "status": "PAUSED",
+        "name": ad_name,
+        "adset_id": ad_set_id,
+        "creative": json.dumps({"creative_id": creative_id}),
+    }
+    try:
+        response = requests.post(url, headers=headers, params=params)
+        response_data = response.json()
+        if response.status_code == 200:
+            if "id" in response_data:
+                published_ad_id = response_data["id"]
+                print(f"Published ad id: {published_ad_id}")
+                return published_ad_id, None
+            else:
+                error = f"Ad creation: 'id' not found in response data for ad name '{ad_name}' (ad_set_id: {ad_set_id})"
+                print(f"Error: {error}")
+                return None, error
+        else:
+            error = f"Ad creation failed for ad '{ad_name}' (ad_set_id: {ad_set_id}): {response.status_code} - {response.text}"
+            print(f"Error: {error}")
+            return None, error
+    except requests.exceptions.RequestException as e:
+        error = f"Ad creation request error for ad '{ad_name}' (ad_set_id: {ad_set_id}): {e}"
+        print(error)
+        return None, error
+
+    return (
+        None,
+        f"Ad creation failed for ad '{ad_name}' (ad_set_id: {ad_set_id}): Unknown error",
+    )
+
+
+def create_partnership_ads_from_csv(
+    access_token: str,
+    ig_account_id: str,
+    ad_account_id: str,
+    facebook_page_id: str,
+    input_csv: str,
+    output_csv: str = "created_ads_output.csv",
+) -> None:
+    """
+    Create partnership ads from input CSV file.
+
+    The input CSV should have the following columns:
+    - permalink: Media permalink or shortcode (either permalink or ad_code is required)
+    - ad_code: Ad code if available (either permalink or ad_code is required)
+    - ad_set_id: Ad set ID to create ad under (must be entered as text, not number)
+    - cta_type: Call to action type (e.g., "INSTALL_MOBILE_APP", "LEARN_MORE")
+    - link: CTA link (mandatory)
+    - app_link: CTA app link (optional)
+    - ad_name: Name for the ad
+    - product_set_id (optional): Product set ID
+
+    Args:
+        access_token: Facebook/Instagram access token
+        ig_account_id: Instagram account ID
+        ad_account_id: Ad account ID
+        facebook_page_id: Facebook page ID
+        input_csv: Input CSV file path
+        output_csv: Output CSV file path
+    """
+    print(f"Reading input CSV: {input_csv}")
+
+    try:
+        rows = []
+        with open(input_csv, mode="r", encoding="utf-8") as file:
+            csv_reader = csv.DictReader(file)
+            for row in csv_reader:
+                rows.append(row)
+
+        if not rows:
+            print("No rows found in input CSV")
+            return
+
+        print(f"Processing {len(rows)} rows...")
+
+        output_rows = []
+        for idx, row in enumerate(rows, 1):
+            print(f"\n[{idx}/{len(rows)}] Processing: {row.get('ad_name', 'Unknown')}")
+
+            output_row = row.copy()
+
+            permalink = row.get("permalink", "")
+            ad_code = row.get("ad_code", "")
+            cta_type = row.get("cta_type")
+            link = row.get("link")
+            app_link = row.get("app_link", "")
+            ad_name = row.get("ad_name")
+            ad_set_id = row.get("ad_set_id")
+            product_set_id = row.get("product_set_id", "")
+
+            required_fields = {
+                "cta_type": cta_type,
+                "link": link,
+                "ad_name": ad_name,
+                "ad_set_id": ad_set_id,
+            }
+
+            missing_fields = [k for k, v in required_fields.items() if not v]
+            if missing_fields:
+                error_msg = f"Missing required fields: {', '.join(missing_fields)}"
+                print(f"Error: {error_msg}")
+                output_row["status"] = "failed"
+                output_row["error"] = error_msg
+                output_row["video_id"] = ""
+                output_row["creative_id"] = ""
+                output_row["published_ad_id"] = ""
+                output_rows.append(output_row)
+                continue
+
+            if not permalink and not ad_code:
+                error_msg = "Either permalink or ad_code must be provided"
+                print(f"Error: {error_msg}")
+                output_row["status"] = "failed"
+                output_row["error"] = error_msg
+                output_row["video_id"] = ""
+                output_row["creative_id"] = ""
+                output_row["published_ad_id"] = ""
+                output_rows.append(output_row)
+                continue
+
+            video_id = None
+            video_error = None
+            creative_id = None
+            creative_error = None
+            published_ad_id = None
+            ad_error = None
+            eligibility_error = None
+
+            try:
+                if ad_code:
+                    # When ad_code is provided, it already has permission
+                    eligibility = fetch_branded_content_advertisable_medias(
+                        access_token, ig_account_id, ad_code=ad_code
+                    )
+                elif permalink:
+                    # Extract shortcode from permalink if it's a URL
+                    # This will raise ValueError if it's a stories URL
+                    try:
+                        shortcode = extract_instagram_shortcode(permalink)
+                    except ValueError as e:
+                        # Stories URLs are not supported
+                        eligibility_error = str(e)
+                        print(f"Eligibility check failed: {eligibility_error}")
+                        output_row["status"] = "failed"
+                        output_row["error"] = eligibility_error
+                        output_row["video_id"] = ""
+                        output_row["creative_id"] = ""
+                        output_row["published_ad_id"] = ""
+                        output_rows.append(output_row)
+                        continue
+
+                    eligibility = fetch_branded_content_advertisable_medias(
+                        access_token, ig_account_id, permalinks=[shortcode]
+                    )
+                else:
+                    eligibility = None
+
+                if not eligibility:
+                    eligibility_error = "Failed to fetch media eligibility"
+                elif eligibility.get("error"):
+                    eligibility_error = f"API Error: {eligibility.get('error')}"
+                elif not ad_code and not eligibility.get(
+                    "has_permission_for_partnership_ad"
+                ):
+                    # Only check permission if using permalink (ad_code already has permission)
+                    eligibility_error = (
+                        "Media does not have permission for partnership ads"
+                    )
+                elif (
+                    eligibility.get("eligibility_errors")
+                    and len(eligibility.get("eligibility_errors", [])) > 0
+                ):
+                    errors = eligibility.get("eligibility_errors", [])
+                    eligibility_error = f"Eligibility errors: {', '.join(errors)}"
+
+                if eligibility_error:
+                    print(f"Eligibility check failed: {eligibility_error}")
+                    output_row["status"] = "failed"
+                    output_row["error"] = eligibility_error
+                    output_row["video_id"] = ""
+                    output_row["creative_id"] = ""
+                    output_row["published_ad_id"] = ""
+                    output_rows.append(output_row)
+                    continue
+
+                source_instagram_media_id = eligibility.get("id")
+                if not source_instagram_media_id:
+                    error_msg = "Media ID not found in eligibility response"
+                    print(f"Error: {error_msg}")
+                    output_row["status"] = "failed"
+                    output_row["error"] = error_msg
+                    output_row["video_id"] = ""
+                    output_row["creative_id"] = ""
+                    output_row["published_ad_id"] = ""
+                    output_rows.append(output_row)
+                    continue
+
+                video_id, video_error = upload_instagram_video(
+                    access_token,
+                    ad_account_id,
+                    source_instagram_media_id,
+                    ad_code if ad_code else None,
+                )
+
+                if not video_id:
+                    print(f"Video upload failed: {video_error}")
+                    output_row["status"] = "failed"
+                    output_row["error"] = video_error or "Video upload failed"
+                    output_row["video_id"] = ""
+                    output_row["creative_id"] = ""
+                    output_row["published_ad_id"] = ""
+                    output_rows.append(output_row)
+                    continue
+
+                creative_id, creative_error = create_ad_creative(
+                    access_token,
+                    ad_account_id,
+                    facebook_page_id,
+                    ig_account_id,
+                    source_instagram_media_id,
+                    ad_code if ad_code else None,
+                    cta_type,
+                    link,
+                    app_link if app_link else None,
+                    product_set_id if product_set_id else None,
+                )
+
+                if not creative_id:
+                    print(f"Creative creation failed: {creative_error}")
+                    output_row["status"] = "failed"
+                    output_row["error"] = creative_error or "Creative creation failed"
+                    output_row["video_id"] = video_id or ""
+                    output_row["creative_id"] = ""
+                    output_row["published_ad_id"] = ""
+                    output_rows.append(output_row)
+                    continue
+
+                published_ad_id, ad_error = create_ad(
+                    access_token, ad_account_id, ad_name, ad_set_id, creative_id
+                )
+
+                if not published_ad_id:
+                    print(f"Ad creation failed: {ad_error}")
+                    output_row["status"] = "failed"
+                    output_row["error"] = ad_error or "Ad creation failed"
+                    output_row["video_id"] = video_id or ""
+                    output_row["creative_id"] = creative_id or ""
+                    output_row["published_ad_id"] = ""
+                    output_rows.append(output_row)
+                    continue
+
+                output_row["status"] = "success"
+                output_row["error"] = ""
+                output_row["video_id"] = video_id or ""
+                output_row["creative_id"] = creative_id or ""
+                output_row["published_ad_id"] = published_ad_id or ""
+                output_rows.append(output_row)
+
+            except Exception as e:
+                error_msg = f"Unexpected error: {str(e)}"
+                print(f"Error: {error_msg}")
+                output_row["status"] = "failed"
+                output_row["error"] = error_msg
+                output_row["video_id"] = video_id or ""
+                output_row["creative_id"] = creative_id or ""
+                output_row["published_ad_id"] = published_ad_id or ""
+                output_rows.append(output_row)
+
+        fieldnames = list(output_rows[0].keys()) if output_rows else []
+        with open(output_csv, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(output_rows)
+
+        successful = len([r for r in output_rows if r.get("status") == "success"])
+        print(f"\n\nSummary:")
+        print(f"Total rows processed: {len(output_rows)}")
+        print(f"Successful: {successful}")
+        print(f"Failed: {len(output_rows) - successful}")
+        print(f"Results saved to: {output_csv}")
+
+    except FileNotFoundError:
+        print(f"Error: The file {input_csv} was not found.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Partnership Ads Booster - Fetch and create partnership ads",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  Fetch all advertisable medias:
+    python partnership_ads_booster.py --mode fetch --access-token YOUR_TOKEN --ig-account-id 17841400875057971 --creator-username CREATOR_USERNAME
+
+  Create partnership ads from CSV:
+    python partnership_ads_booster.py --mode create --access-token YOUR_TOKEN \\
+      --ig-account-id 17841400875057971 --ad-account-id 1549883851784009 \\
+      --facebook-page-id 102988293558 --input-csv input.csv
+        """,
+    )
+
+    parser.add_argument(
+        "--mode",
+        choices=["fetch", "create"],
+        required=True,
+        help='Mode: "fetch" to download advertisable medias or "create" to create partnership ads',
+    )
+    parser.add_argument(
+        "--access-token", required=True, help="Facebook/Instagram access token"
+    )
+    parser.add_argument("--ig-account-id", required=True, help="Instagram account ID")
+    parser.add_argument(
+        "--creator-username",
+        help="Instagram creator username (optional but recommended to avoid fetching too much data)",
+    )
+    parser.add_argument(
+        "--ad-account-id", help="Ad account ID (required for create mode)"
+    )
+    parser.add_argument(
+        "--facebook-page-id", help="Facebook page ID (required for create mode)"
+    )
+    parser.add_argument(
+        "--input-csv", help="Input CSV file path (required for create mode)"
+    )
+    parser.add_argument(
+        "--output-csv",
+        help="Output CSV file path (default: advertisable_medias.csv for fetch, created_ads_output.csv for create)",
+    )
+
+    args = parser.parse_args()
+
+    if args.mode == "fetch":
+        output_csv = args.output_csv or "advertisable_medias.csv"
+        fetch_all_advertisable_medias(
+            args.access_token, args.ig_account_id, args.creator_username, output_csv
+        )
+
+    elif args.mode == "create":
+        if not args.ad_account_id:
+            print("Error: --ad-account-id is required for create mode")
+            sys.exit(1)
+        if not args.facebook_page_id:
+            print("Error: --facebook-page-id is required for create mode")
+            sys.exit(1)
+        if not args.input_csv:
+            print("Error: --input-csv is required for create mode")
+            sys.exit(1)
+
+        output_csv = args.output_csv or "created_ads_output.csv"
+        create_partnership_ads_from_csv(
+            args.access_token,
+            args.ig_account_id,
+            args.ad_account_id,
+            args.facebook_page_id,
+            args.input_csv,
+            output_csv,
+        )
+
+
+if __name__ == "__main__":
+    main()
