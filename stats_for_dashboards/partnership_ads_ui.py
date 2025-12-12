@@ -62,8 +62,8 @@ def main():
             limit = st.number_input(
                 "Limit (Optional)",
                 min_value=0,
-                value=0,
-                help="Maximum number of medias to fetch. Set to 0 for no limit.",
+                value=None,
+                help="Maximum number of medias to fetch. Leave empty for no limit.",
             )
 
             output_filename = st.text_input(
@@ -87,7 +87,7 @@ def main():
                             ig_account_id,
                             creator_username if creator_username else None,
                             temp_output,
-                            limit if limit > 0 else None,
+                            limit if limit and limit > 0 else None,
                         )
 
                         # Read the CSV and display preview
