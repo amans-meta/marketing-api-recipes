@@ -59,6 +59,13 @@ def main():
                 help="Filter by creator username to avoid fetching too much data",
             )
 
+            limit = st.number_input(
+                "Limit (Optional)",
+                min_value=0,
+                value=None,
+                help="Maximum number of medias to fetch. Leave empty for no limit.",
+            )
+
             output_filename = st.text_input(
                 "Output Filename",
                 value="advertisable_medias.csv",
@@ -80,6 +87,7 @@ def main():
                             ig_account_id,
                             creator_username if creator_username else None,
                             temp_output,
+                            limit if limit and limit > 0 else None,
                         )
 
                         # Read the CSV and display preview
