@@ -67,6 +67,7 @@ def fetch_all_advertisable_medias(
     ig_account_id: str,
     creator_username: Optional[str] = None,
     output_csv: str = "advertisable_medias.csv",
+    limit: Optional[int] = None,
 ) -> None:
     """
     Fetch all advertisable medias for the given Instagram account and save to CSV.
@@ -76,6 +77,7 @@ def fetch_all_advertisable_medias(
         ig_account_id: Instagram account ID
         creator_username: Instagram creator username (optional but recommended to avoid fetching too much data)
         output_csv: Output CSV file path
+        limit: Maximum number of medias to fetch (optional, fetches all if not specified)
     """
     creator_info = f" (creator: {creator_username})" if creator_username else ""
     print(
@@ -111,6 +113,11 @@ def fetch_all_advertisable_medias(
                 medias = response_data["data"]
                 all_medias.extend(medias)
                 print(f"Fetched {len(medias)} medias (Total: {len(all_medias)})")
+
+                if limit and len(all_medias) >= limit:
+                    all_medias = all_medias[:limit]
+                    print(f"Reached limit of {limit} medias")
+                    break
 
             if "paging" in response_data and "next" in response_data["paging"]:
                 url = response_data["paging"]["next"]

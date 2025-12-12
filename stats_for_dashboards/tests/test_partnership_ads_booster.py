@@ -288,6 +288,141 @@ class TestFetchAllAdvertisableMedias:
         call_args = mock_get.call_args
         assert "creator_username" not in call_args[1]["params"]
 
+    @patch("stats_for_dashboards.partnership_ads_booster.requests.get")
+    @patch("builtins.open", new_callable=mock_open)
+    def test_fetch_all_advertisable_medias_with_limit(
+        self,
+        mock_file,
+        mock_get,
+        mock_access_token,
+        mock_ig_account_id,
+        mock_creator_username,
+    ):
+        """Test that limit parameter correctly limits the number of fetched medias"""
+        # Create response with 5 medias across 2 pages
+        first_response = {
+            "data": [
+                {
+                    "id": f"media_{i}",
+                    "permalink": f"https://instagram.com/p/{i}",
+                    "owner_id": f"owner_{i}",
+                    "has_permission_for_partnership_ad": True,
+                    "eligibility_errors": [],
+                }
+                for i in range(3)
+            ],
+            "paging": {"next": "https://graph.facebook.com/v22.0/next_page"},
+        }
+
+        second_response = {
+            "data": [
+                {
+                    "id": f"media_{i}",
+                    "permalink": f"https://instagram.com/p/{i}",
+                    "owner_id": f"owner_{i}",
+                    "has_permission_for_partnership_ad": True,
+                    "eligibility_errors": [],
+                }
+                for i in range(3, 6)
+            ],
+            "paging": {},
+        }
+
+        mock_response_1 = MagicMock()
+        mock_response_1.status_code = 200
+        mock_response_1.json.return_value = first_response
+
+        mock_response_2 = MagicMock()
+        mock_response_2.status_code = 200
+        mock_response_2.json.return_value = second_response
+
+        mock_get.side_effect = [mock_response_1, mock_response_2]
+
+        # Set limit to 2, should only get 2 medias
+        partnership_ads_booster.fetch_all_advertisable_medias(
+            mock_access_token,
+            mock_ig_account_id,
+            mock_creator_username,
+            "test_output.csv",
+            limit=2,
+        )
+
+        # Should only make 1 API call since limit is reached after first response
+        assert mock_get.call_count == 1
+
+        # Verify output file was written with limited results
+        handle = mock_file()
+        written_content = "".join(call.args[0] for call in handle.write.call_args_list)
+        # Should contain media_0 and media_1 but not media_2
+        assert "media_0" in written_content
+        assert "media_1" in written_content
+        assert "media_2" not in written_content
+
+    @patch("stats_for_dashboards.partnership_ads_booster.requests.get")
+    @patch("builtins.open", new_callable=mock_open)
+    def test_fetch_all_advertisable_medias_limit_none(
+        self,
+        mock_file,
+        mock_get,
+        mock_access_token,
+        mock_ig_account_id,
+        mock_creator_username,
+    ):
+        """Test that when limit is None, all medias are fetched"""
+        first_response = {
+            "data": [
+                {
+                    "id": "media_1",
+                    "permalink": "https://instagram.com/p/1",
+                    "owner_id": "owner_1",
+                    "has_permission_for_partnership_ad": True,
+                    "eligibility_errors": [],
+                }
+            ],
+            "paging": {"next": "https://graph.facebook.com/v22.0/next_page"},
+        }
+
+        second_response = {
+            "data": [
+                {
+                    "id": "media_2",
+                    "permalink": "https://instagram.com/p/2",
+                    "owner_id": "owner_2",
+                    "has_permission_for_partnership_ad": True,
+                    "eligibility_errors": [],
+                }
+            ],
+            "paging": {},
+        }
+
+        mock_response_1 = MagicMock()
+        mock_response_1.status_code = 200
+        mock_response_1.json.return_value = first_response
+
+        mock_response_2 = MagicMock()
+        mock_response_2.status_code = 200
+        mock_response_2.json.return_value = second_response
+
+        mock_get.side_effect = [mock_response_1, mock_response_2]
+
+        # No limit - should fetch all pages
+        partnership_ads_booster.fetch_all_advertisable_medias(
+            mock_access_token,
+            mock_ig_account_id,
+            mock_creator_username,
+            "test_output.csv",
+            limit=None,
+        )
+
+        # Should make 2 API calls to get all pages
+        assert mock_get.call_count == 2
+
+        # Verify both medias are in output
+        handle = mock_file()
+        written_content = "".join(call.args[0] for call in handle.write.call_args_list)
+        assert "media_1" in written_content
+        assert "media_2" in written_content
+
 
 class TestFetchBrandedContentAdvertisableMedias:
     """Tests for fetch_branded_content_advertisable_medias function"""
