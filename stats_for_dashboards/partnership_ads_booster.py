@@ -62,12 +62,79 @@ def extract_instagram_shortcode(permalink: str) -> str:
     return permalink.strip("/")
 
 
+def fetch_media_insights(
+    access_token: str,
+    media_id: str,
+) -> Dict[str, Optional[int]]:
+    """
+    Fetch engagement insights for a specific media.
+
+    Args:
+        access_token: Facebook/Instagram access token
+        media_id: Instagram media ID
+
+    Returns:
+        Dict containing: likes, comments, reach, impressions, saves
+        Values are None if not available for this media type
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+
+    result = {
+        "likes": None,
+        "comments": None,
+        "reach": None,
+        "impressions": None,
+        "saves": None,
+    }
+
+    # Fetch basic metrics (like_count, comments_count) from media object
+    try:
+        media_url = f"https://graph.facebook.com/v22.0/{media_id}"
+        media_params = {"fields": "like_count,comments_count"}
+        response = requests.get(media_url, headers=headers, params=media_params)
+        if response.status_code == 200:
+            data = response.json()
+            result["likes"] = data.get("like_count")
+            result["comments"] = data.get("comments_count")
+    except Exception as e:
+        print(f"Warning: Failed to fetch basic metrics for media {media_id}: {e}")
+
+    # Fetch insights (reach, impressions, saved) from insights endpoint
+    try:
+        insights_url = f"https://graph.facebook.com/v22.0/{media_id}/insights"
+        insights_params = {"metric": "reach,impressions,saved"}
+        response = requests.get(insights_url, headers=headers, params=insights_params)
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data:
+                for metric in data["data"]:
+                    name = metric.get("name")
+                    values = metric.get("values", [])
+                    if values and len(values) > 0:
+                        value = values[0].get("value")
+                        if name == "reach":
+                            result["reach"] = value
+                        elif name == "impressions":
+                            result["impressions"] = value
+                        elif name == "saved":
+                            result["saves"] = value
+    except Exception as e:
+        print(f"Warning: Failed to fetch insights for media {media_id}: {e}")
+
+    return result
+
+
 def fetch_all_advertisable_medias(
     access_token: str,
     ig_account_id: str,
     creator_username: Optional[str] = None,
     output_csv: str = "advertisable_medias.csv",
     limit: Optional[int] = None,
+    only_with_permission: bool = False,
+    include_engagement_metrics: bool = False,
 ) -> None:
     """
     Fetch all advertisable medias for the given Instagram account and save to CSV.
@@ -78,6 +145,8 @@ def fetch_all_advertisable_medias(
         creator_username: Instagram creator username (optional but recommended to avoid fetching too much data)
         output_csv: Output CSV file path
         limit: Maximum number of medias to fetch (optional, fetches all if not specified)
+        only_with_permission: If True, only include medias with partnership ad permission
+        include_engagement_metrics: If True, fetch engagement metrics (likes, comments, reach, impressions, saves)
     """
     creator_info = f" (creator: {creator_username})" if creator_username else ""
     print(
@@ -111,6 +180,11 @@ def fetch_all_advertisable_medias(
 
             if "data" in response_data:
                 medias = response_data["data"]
+
+                # Apply permission filter if requested
+                if only_with_permission:
+                    medias = [m for m in medias if m.get("has_permission_for_partnership_ad", False)]
+
                 all_medias.extend(medias)
                 print(f"Fetched {len(medias)} medias (Total: {len(all_medias)})")
 
@@ -130,7 +204,8 @@ def fetch_all_advertisable_medias(
             return
 
         csv_rows = []
-        for media in all_medias:
+        total_medias = len(all_medias)
+        for idx, media in enumerate(all_medias, 1):
             row = {
                 "media_id": media.get("id", ""),
                 "permalink": media.get("permalink", ""),
@@ -140,6 +215,19 @@ def fetch_all_advertisable_medias(
                 ),
                 "eligibility_errors": json.dumps(media.get("eligibility_errors", [])),
             }
+
+            # Fetch engagement metrics if requested
+            if include_engagement_metrics:
+                media_id = media.get("id")
+                if media_id:
+                    print(f"Fetching metrics for media {idx}/{total_medias}...")
+                    metrics = fetch_media_insights(access_token, media_id)
+                    row["likes"] = metrics.get("likes")
+                    row["comments"] = metrics.get("comments")
+                    row["reach"] = metrics.get("reach")
+                    row["impressions"] = metrics.get("impressions")
+                    row["saves"] = metrics.get("saves")
+
             csv_rows.append(row)
 
         fieldnames = [
@@ -149,6 +237,10 @@ def fetch_all_advertisable_medias(
             "has_permission_for_partnership_ad",
             "eligibility_errors",
         ]
+
+        # Add engagement metrics columns if they were fetched
+        if include_engagement_metrics:
+            fieldnames.extend(["likes", "comments", "reach", "impressions", "saves"])
         with open(output_csv, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
@@ -720,13 +812,28 @@ Examples:
         "--output-csv",
         help="Output CSV file path (default: advertisable_medias.csv for fetch, created_ads_output.csv for create)",
     )
+    parser.add_argument(
+        "--only-with-permission",
+        action="store_true",
+        help="Only fetch medias with partnership ad permission (fetch mode only)",
+    )
+    parser.add_argument(
+        "--include-metrics",
+        action="store_true",
+        help="Include engagement metrics (likes, comments, reach, impressions, saves) - slower (fetch mode only)",
+    )
 
     args = parser.parse_args()
 
     if args.mode == "fetch":
         output_csv = args.output_csv or "advertisable_medias.csv"
         fetch_all_advertisable_medias(
-            args.access_token, args.ig_account_id, args.creator_username, output_csv
+            args.access_token,
+            args.ig_account_id,
+            args.creator_username,
+            output_csv,
+            only_with_permission=args.only_with_permission,
+            include_engagement_metrics=args.include_metrics,
         )
 
     elif args.mode == "create":
