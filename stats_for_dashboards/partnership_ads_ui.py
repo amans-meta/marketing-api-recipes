@@ -75,7 +75,7 @@ def main():
             include_metrics = st.checkbox(
                 "Include engagement metrics",
                 value=False,
-                help="Fetch likes, comments, reach, impressions, and saves for each media (slower - requires additional API calls)",
+                help="Fetch likes and comments for each media (slower - requires additional API calls)",
             )
 
             output_filename = st.text_input(
@@ -94,7 +94,7 @@ def main():
                     try:
                         # Show warning if metrics enabled
                         if include_metrics:
-                            st.info("⏳ Fetching engagement metrics requires additional API calls per media. This may take a while...")
+                            st.info("⏳ Fetching engagement metrics (likes, comments) requires additional API calls per media. This may take a while...")
 
                         # Use a temporary file path
                         temp_output = f"/tmp/{output_filename}"

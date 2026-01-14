@@ -67,14 +67,14 @@ def fetch_media_insights(
     media_id: str,
 ) -> Dict[str, Optional[int]]:
     """
-    Fetch engagement insights for a specific media.
+    Fetch engagement metrics for a specific media.
 
     Args:
         access_token: Facebook/Instagram access token
         media_id: Instagram media ID
 
     Returns:
-        Dict containing: likes, comments, reach, impressions, saves
+        Dict containing: likes, comments
         Values are None if not available for this media type
     """
     headers = {
@@ -85,9 +85,6 @@ def fetch_media_insights(
     result = {
         "likes": None,
         "comments": None,
-        "reach": None,
-        "impressions": None,
-        "saves": None,
     }
 
     # Fetch basic metrics (like_count, comments_count) from media object
@@ -100,29 +97,7 @@ def fetch_media_insights(
             result["likes"] = data.get("like_count")
             result["comments"] = data.get("comments_count")
     except Exception as e:
-        print(f"Warning: Failed to fetch basic metrics for media {media_id}: {e}")
-
-    # Fetch insights (reach, impressions, saved) from insights endpoint
-    try:
-        insights_url = f"https://graph.facebook.com/v22.0/{media_id}/insights"
-        insights_params = {"metric": "reach,impressions,saved"}
-        response = requests.get(insights_url, headers=headers, params=insights_params)
-        if response.status_code == 200:
-            data = response.json()
-            if "data" in data:
-                for metric in data["data"]:
-                    name = metric.get("name")
-                    values = metric.get("values", [])
-                    if values and len(values) > 0:
-                        value = values[0].get("value")
-                        if name == "reach":
-                            result["reach"] = value
-                        elif name == "impressions":
-                            result["impressions"] = value
-                        elif name == "saved":
-                            result["saves"] = value
-    except Exception as e:
-        print(f"Warning: Failed to fetch insights for media {media_id}: {e}")
+        print(f"Warning: Failed to fetch metrics for media {media_id}: {e}")
 
     return result
 
@@ -224,9 +199,6 @@ def fetch_all_advertisable_medias(
                     metrics = fetch_media_insights(access_token, media_id)
                     row["likes"] = metrics.get("likes")
                     row["comments"] = metrics.get("comments")
-                    row["reach"] = metrics.get("reach")
-                    row["impressions"] = metrics.get("impressions")
-                    row["saves"] = metrics.get("saves")
 
             csv_rows.append(row)
 
@@ -240,7 +212,7 @@ def fetch_all_advertisable_medias(
 
         # Add engagement metrics columns if they were fetched
         if include_engagement_metrics:
-            fieldnames.extend(["likes", "comments", "reach", "impressions", "saves"])
+            fieldnames.extend(["likes", "comments"])
         with open(output_csv, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
@@ -820,7 +792,7 @@ Examples:
     parser.add_argument(
         "--include-metrics",
         action="store_true",
-        help="Include engagement metrics (likes, comments, reach, impressions, saves) - slower (fetch mode only)",
+        help="Include engagement metrics (likes, comments) - slower (fetch mode only)",
     )
 
     args = parser.parse_args()
