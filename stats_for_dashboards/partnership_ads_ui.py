@@ -66,6 +66,18 @@ def main():
                 help="Maximum number of medias to fetch. Leave empty for no limit.",
             )
 
+            only_with_permission = st.checkbox(
+                "Only fetch media with partnership ad permission",
+                value=False,
+                help="Filter to only include media where the advertiser has permission to create partnership ads",
+            )
+
+            include_metrics = st.checkbox(
+                "Include engagement metrics",
+                value=False,
+                help="Fetch likes and comments for each media (slower - requires additional API calls)",
+            )
+
             output_filename = st.text_input(
                 "Output Filename",
                 value="advertisable_medias.csv",
@@ -80,6 +92,10 @@ def main():
             else:
                 with st.spinner("Fetching advertisable medias..."):
                     try:
+                        # Show warning if metrics enabled
+                        if include_metrics:
+                            st.info("⏳ Fetching engagement metrics (likes, comments) requires additional API calls per media. This may take a while...")
+
                         # Use a temporary file path
                         temp_output = f"/tmp/{output_filename}"
                         fetch_all_advertisable_medias(
@@ -88,6 +104,8 @@ def main():
                             creator_username if creator_username else None,
                             temp_output,
                             limit if limit and limit > 0 else None,
+                            only_with_permission,
+                            include_metrics,
                         )
 
                         # Read the CSV and display preview

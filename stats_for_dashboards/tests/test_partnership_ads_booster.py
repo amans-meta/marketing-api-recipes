@@ -130,6 +130,60 @@ def sample_csv_rows():
     ]
 
 
+class TestFetchMediaInsights:
+    """Tests for fetch_media_insights function"""
+
+    @patch("stats_for_dashboards.partnership_ads_booster.requests.get")
+    def test_fetch_media_insights_success(self, mock_get, mock_access_token):
+        """Test successful fetch of likes and comments"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "like_count": 150,
+            "comments_count": 25,
+        }
+        mock_get.return_value = mock_response
+
+        result = partnership_ads_booster.fetch_media_insights(
+            mock_access_token, "media_123"
+        )
+
+        assert result["likes"] == 150
+        assert result["comments"] == 25
+
+    @patch("stats_for_dashboards.partnership_ads_booster.requests.get")
+    def test_fetch_media_insights_api_error(self, mock_get, mock_access_token):
+        """Test that API errors return None values gracefully"""
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_get.return_value = mock_response
+
+        result = partnership_ads_booster.fetch_media_insights(
+            mock_access_token, "media_123"
+        )
+
+        assert result["likes"] is None
+        assert result["comments"] is None
+
+    @patch("stats_for_dashboards.partnership_ads_booster.requests.get")
+    def test_fetch_media_insights_partial_data(self, mock_get, mock_access_token):
+        """Test handling of partial data from API"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "like_count": 100,
+            # comments_count missing
+        }
+        mock_get.return_value = mock_response
+
+        result = partnership_ads_booster.fetch_media_insights(
+            mock_access_token, "media_123"
+        )
+
+        assert result["likes"] == 100
+        assert result["comments"] is None
+
+
 class TestFetchAllAdvertisableMedias:
     """Tests for fetch_all_advertisable_medias function"""
 
@@ -422,6 +476,109 @@ class TestFetchAllAdvertisableMedias:
         written_content = "".join(call.args[0] for call in handle.write.call_args_list)
         assert "media_1" in written_content
         assert "media_2" in written_content
+
+    @patch("stats_for_dashboards.partnership_ads_booster.requests.get")
+    @patch("builtins.open", new_callable=mock_open)
+    def test_fetch_all_advertisable_medias_only_with_permission(
+        self,
+        mock_file,
+        mock_get,
+        mock_access_token,
+        mock_ig_account_id,
+        mock_creator_username,
+        sample_media_response,
+    ):
+        """Test that only_with_permission filter excludes medias without permission"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = sample_media_response
+        mock_get.return_value = mock_response
+
+        partnership_ads_booster.fetch_all_advertisable_medias(
+            mock_access_token,
+            mock_ig_account_id,
+            mock_creator_username,
+            "test_output.csv",
+            only_with_permission=True,
+        )
+
+        handle = mock_file()
+        written_content = "".join(call.args[0] for call in handle.write.call_args_list)
+        # media_123 has permission, media_456 does not
+        assert "media_123" in written_content
+        assert "media_456" not in written_content
+
+    @patch("stats_for_dashboards.partnership_ads_booster.fetch_media_insights")
+    @patch("stats_for_dashboards.partnership_ads_booster.requests.get")
+    @patch("builtins.open", new_callable=mock_open)
+    def test_fetch_all_advertisable_medias_with_engagement_metrics(
+        self,
+        mock_file,
+        mock_get,
+        mock_fetch_insights,
+        mock_access_token,
+        mock_ig_account_id,
+        mock_creator_username,
+        sample_media_response,
+    ):
+        """Test that include_engagement_metrics fetches and includes metrics"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = sample_media_response
+        mock_get.return_value = mock_response
+
+        # Mock fetch_media_insights to return metrics
+        mock_fetch_insights.return_value = {"likes": 100, "comments": 10}
+
+        partnership_ads_booster.fetch_all_advertisable_medias(
+            mock_access_token,
+            mock_ig_account_id,
+            mock_creator_username,
+            "test_output.csv",
+            include_engagement_metrics=True,
+        )
+
+        # Verify fetch_media_insights was called for each media
+        assert mock_fetch_insights.call_count == 2
+
+        handle = mock_file()
+        written_content = "".join(call.args[0] for call in handle.write.call_args_list)
+        # Verify metrics columns are in output
+        assert "likes" in written_content
+        assert "comments" in written_content
+
+    @patch("stats_for_dashboards.partnership_ads_booster.requests.get")
+    @patch("builtins.open", new_callable=mock_open)
+    def test_fetch_all_advertisable_medias_without_engagement_metrics(
+        self,
+        mock_file,
+        mock_get,
+        mock_access_token,
+        mock_ig_account_id,
+        mock_creator_username,
+        sample_media_response,
+    ):
+        """Test that metrics columns are not included when include_engagement_metrics is False"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = sample_media_response
+        mock_get.return_value = mock_response
+
+        partnership_ads_booster.fetch_all_advertisable_medias(
+            mock_access_token,
+            mock_ig_account_id,
+            mock_creator_username,
+            "test_output.csv",
+            include_engagement_metrics=False,
+        )
+
+        handle = mock_file()
+        written_content = "".join(call.args[0] for call in handle.write.call_args_list)
+        # Verify the header row doesn't include likes/comments columns
+        lines = written_content.split('\n')
+        header = lines[0] if lines else ""
+        assert "likes" not in header.split(',')
+        assert "comments" not in header.split(',')
 
 
 class TestFetchBrandedContentAdvertisableMedias:
@@ -893,3 +1050,68 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             partnership_ads_booster.main()
         assert exc_info.value.code == 1
+
+    @patch("stats_for_dashboards.partnership_ads_booster.fetch_all_advertisable_medias")
+    @patch(
+        "sys.argv",
+        [
+            "partnership_ads_booster.py",
+            "--mode",
+            "fetch",
+            "--access-token",
+            "test_token",
+            "--ig-account-id",
+            "123456",
+            "--only-with-permission",
+        ],
+    )
+    def test_main_fetch_mode_with_only_permission_flag(self, mock_fetch):
+        """Test that --only-with-permission flag is passed correctly"""
+        partnership_ads_booster.main()
+        mock_fetch.assert_called_once()
+        call_kwargs = mock_fetch.call_args[1]
+        assert call_kwargs["only_with_permission"] == True
+
+    @patch("stats_for_dashboards.partnership_ads_booster.fetch_all_advertisable_medias")
+    @patch(
+        "sys.argv",
+        [
+            "partnership_ads_booster.py",
+            "--mode",
+            "fetch",
+            "--access-token",
+            "test_token",
+            "--ig-account-id",
+            "123456",
+            "--include-metrics",
+        ],
+    )
+    def test_main_fetch_mode_with_include_metrics_flag(self, mock_fetch):
+        """Test that --include-metrics flag is passed correctly"""
+        partnership_ads_booster.main()
+        mock_fetch.assert_called_once()
+        call_kwargs = mock_fetch.call_args[1]
+        assert call_kwargs["include_engagement_metrics"] == True
+
+    @patch("stats_for_dashboards.partnership_ads_booster.fetch_all_advertisable_medias")
+    @patch(
+        "sys.argv",
+        [
+            "partnership_ads_booster.py",
+            "--mode",
+            "fetch",
+            "--access-token",
+            "test_token",
+            "--ig-account-id",
+            "123456",
+            "--only-with-permission",
+            "--include-metrics",
+        ],
+    )
+    def test_main_fetch_mode_with_both_flags(self, mock_fetch):
+        """Test that both flags can be used together"""
+        partnership_ads_booster.main()
+        mock_fetch.assert_called_once()
+        call_kwargs = mock_fetch.call_args[1]
+        assert call_kwargs["only_with_permission"] == True
+        assert call_kwargs["include_engagement_metrics"] == True
